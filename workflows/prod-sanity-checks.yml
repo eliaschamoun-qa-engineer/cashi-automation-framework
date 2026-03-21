@@ -1,0 +1,52 @@
+name: Prod Sanity Checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type CONFIRM to run against production'
+        required: true
+        type: string
+
+jobs:
+  validate-confirmation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation input
+        if: github.event.inputs.confirmation != 'CONFIRM'
+        run: |
+          echo "::error::You must type CONFIRM to run prod sanity checks"
+          exit 1
+
+  prod-sanity:
+    needs: validate-confirmation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run prod smoke tests (read-only)
+        run: |
+          mvn -pl cashi-web -am verify \
+            -Dtest.tags="smoke & web" \
+            -Denv=prod \
+            -Dallow.prod.readonly=true \
+            -Dfailsafe.rerunFailingTestsCount=0
+
+      - name: Upload Allure Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-prod-sanity
+          path: cashi-web/target/allure-results
+          retention-days: 90
