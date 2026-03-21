@@ -1,0 +1,34 @@
+{
+  "biometricScenarios": [
+    {
+      "name": "fingerprint_enrolled",
+      "type": "fingerprint",
+      "enrolled": true,
+      "matchResult": "success"
+    },
+    {
+      "name": "fingerprint_not_enrolled",
+      "type": "fingerprint",
+      "enrolled": false,
+      "matchResult": "not_available"
+    },
+    {
+      "name": "fingerprint_mismatch",
+      "type": "fingerprint",
+      "enrolled": true,
+      "matchResult": "failure"
+    },
+    {
+      "name": "face_enrolled",
+      "type": "face",
+      "enrolled": true,
+      "matchResult": "success"
+    },
+    {
+      "name": "biometric_lockout",
+      "type": "fingerprint",
+      "enrolled": true,
+      "matchResult": "lockout"
+    }
+  ]
+}

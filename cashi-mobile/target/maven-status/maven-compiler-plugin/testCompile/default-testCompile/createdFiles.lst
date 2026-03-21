@@ -1,0 +1,4 @@
+com\cashi\mobile\tests\security\CertPinningTest.class
+com\cashi\mobile\BaseMobileTest.class
+com\cashi\mobile\tests\security\DeepLinkInjectionTest.class
+com\cashi\mobile\tests\security\RootDetectionTest.class

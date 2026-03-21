@@ -1,0 +1,12 @@
+{
+  "platformName": "iOS",
+  "appium:automationName": "XCUITest",
+  "appium:deviceName": "iPhone 15 Pro",
+  "appium:platformVersion": "17.4",
+  "appium:app": "${APP_PATH}/cashi.app",
+  "appium:bundleId": "com.cashi.app",
+  "appium:autoAcceptAlerts": "true",
+  "appium:noReset": "false",
+  "appium:newCommandTimeout": "300",
+  "appium:wdaLaunchTimeout": "120000"
+}

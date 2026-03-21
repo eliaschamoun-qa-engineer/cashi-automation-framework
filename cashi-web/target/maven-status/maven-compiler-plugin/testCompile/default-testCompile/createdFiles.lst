@@ -1,0 +1,7 @@
+com\cashi\web\tests\security\InputSanitizationTest.class
+com\cashi\web\tests\login\LoginTest.class
+com\cashi\web\tests\transfers\SendMoneyTest.class
+com\cashi\web\BaseWebTest.class
+com\cashi\web\tests\security\SessionTest.class
+com\cashi\web\tests\security\AuthBoundaryTest.class
+com\cashi\web\tests\security\SecurityHeadersTest.class

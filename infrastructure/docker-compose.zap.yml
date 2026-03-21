@@ -1,0 +1,21 @@
+services:
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    command: >
+      zap-baseline.py
+        -t ${ZAP_TARGET_URL:-https://staging.cashi.app}
+        -r /zap/reports/zap-report.html
+        -J /zap/reports/zap-report.json
+        -c /zap/config/zap-rules.conf
+        -I
+    volumes:
+      - ./zap-reports:/zap/reports
+      - ./zap-config:/zap/config
+    environment:
+      - ZAP_TARGET_URL=${ZAP_TARGET_URL:-https://staging.cashi.app}
+    networks:
+      - zap-network
+
+networks:
+  zap-network:
+    driver: bridge

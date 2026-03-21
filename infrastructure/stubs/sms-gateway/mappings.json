@@ -1,0 +1,54 @@
+{
+  "mappings": [
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/sms/send"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "messageId": "stub-msg-001",
+          "status": "sent",
+          "provider": "wiremock-stub"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/sms/verify"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "verified": true,
+          "code": "123456"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "urlPattern": "/api/sms/status/.*"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "messageId": "stub-msg-001",
+          "status": "delivered",
+          "deliveredAt": "2024-01-01T12:00:00Z"
+        }
+      }
+    }
+  ]
+}

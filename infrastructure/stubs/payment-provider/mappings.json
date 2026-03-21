@@ -1,0 +1,58 @@
+{
+  "mappings": [
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/payments/initiate"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "transactionId": "stub-txn-001",
+          "status": "processing",
+          "estimatedCompletionSeconds": 5
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "urlPattern": "/api/payments/status/stub-txn-001"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "transactionId": "stub-txn-001",
+          "status": "completed",
+          "amount": 100.00,
+          "currency": "USD",
+          "completedAt": "2024-01-01T12:00:05Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/payments/refund"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "refundId": "stub-refund-001",
+          "originalTransactionId": "stub-txn-001",
+          "status": "refunded",
+          "amount": 100.00
+        }
+      }
+    }
+  ]
+}

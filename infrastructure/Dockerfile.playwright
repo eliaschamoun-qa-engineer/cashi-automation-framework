@@ -1,0 +1,25 @@
+FROM mcr.microsoft.com/playwright/java:v1.47.0-jammy
+
+WORKDIR /app
+
+# Copy Maven wrapper and POM files first for layer caching
+COPY pom.xml ./
+COPY cashi-core/pom.xml ./cashi-core/
+COPY cashi-web/pom.xml ./cashi-web/
+
+# Download dependencies (cached unless POM changes)
+RUN mvn dependency:go-offline -pl cashi-web -am -B
+
+# Copy source code
+COPY cashi-core/src ./cashi-core/src
+COPY cashi-web/src ./cashi-web/src
+
+# Default: run smoke tests against dev
+ENV TEST_TAGS="smoke & web"
+ENV ENV=dev
+ENV PARALLELISM=4
+
+ENTRYPOINT ["mvn", "-pl", "cashi-web", "-am", "verify", \
+  "-Dtest.tags=${TEST_TAGS}", \
+  "-Denv=${ENV}", \
+  "-Djunit.jupiter.execution.parallel.config.fixed.parallelism=${PARALLELISM}"]

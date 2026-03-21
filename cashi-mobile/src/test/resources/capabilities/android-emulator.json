@@ -1,0 +1,12 @@
+{
+  "platformName": "Android",
+  "appium:automationName": "UiAutomator2",
+  "appium:deviceName": "Pixel_6_API_34",
+  "appium:platformVersion": "14",
+  "appium:app": "${APP_PATH}/cashi.apk",
+  "appium:appPackage": "com.cashi.app",
+  "appium:appActivity": "com.cashi.app.MainActivity",
+  "appium:autoGrantPermissions": "true",
+  "appium:noReset": "false",
+  "appium:newCommandTimeout": "300"
+}

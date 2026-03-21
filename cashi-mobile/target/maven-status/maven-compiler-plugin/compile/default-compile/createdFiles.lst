@@ -1,0 +1,4 @@
+com\cashi\mobile\drivers\DeviceManager.class
+com\cashi\mobile\screens\BiometricsScreen.class
+com\cashi\mobile\screens\LoginScreen.class
+com\cashi\mobile\screens\HomeScreen.class
