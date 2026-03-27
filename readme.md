@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-The Cashi Test Automation Platform is an enterprise-grade, multi-module Maven ecosystem designed to validate web and mobile applications. Built on Java 17+, Playwright, and Appium, the framework is engineered for high-volume parallel execution, strict thread safety, and DevSecOps integration. It strictly decouples the shared test engine from UI-specific driver management, ensuring that no module carries dependencies it does not need.
+The Cashi Test Automation Platform is an enterprise-grade, multi-module Maven ecosystem designed to validate web and mobile applications across a microservices architecture. Built on Java 17+, Playwright, Appium, and Pact JVM, the framework is engineered for high-volume parallel execution, strict thread safety, and DevSecOps integration. It strictly decouples the shared test engine from UI-specific driver management and service-boundary contract validation, ensuring that no module carries dependencies it does not need.
 
 ---
 
@@ -23,6 +23,7 @@ The repository follows a multi-module monorepo structure to enforce the DRY (Don
 | `cashi-core` | UI-agnostic engine: API clients, data factories, configuration, logging, shared utilities | **None** |
 | `cashi-web` | Playwright-driven web UI testing: Page Objects, browser lifecycle, web tests | Playwright |
 | `cashi-mobile` | Appium-driven mobile testing: Screen Objects, device management, mobile tests | Appium Java Client 9.x |
+| `cashi-contract-testing` | Consumer-driven contract tests between microservices using Pact JVM; generates and verifies pact files | **None** |
 
 ### 2.1 Dependency Flow
 
@@ -39,9 +40,15 @@ cashi-core  <──compile──  cashi-web
     ├── AssertJ                                        │
     ├── SLF4J/Logback                                  ├── Appium Java Client 9.x
     └── JUnit 5                                        └── JUnit 5
+
+                         cashi-core  <──compile──  cashi-contract-testing
+                                                        │
+                                                        ├── Pact JVM Consumer (junit5)
+                                                        ├── Pact JVM Provider (junit5)
+                                                        └── JUnit 5
 ```
 
-**Architectural Invariant:** `cashi-web` and `cashi-mobile` are siblings — they never depend on each other. `cashi-core` has zero UI framework dependencies.
+**Architectural Invariant:** `cashi-web`, `cashi-mobile`, and `cashi-contract-testing` are siblings — they never depend on each other. `cashi-core` has zero UI framework dependencies. `cashi-contract-testing` has zero UI framework dependencies.
 
 ### 2.2 Directory Structure
 
@@ -52,7 +59,8 @@ cashi-automation-framework/
 │   ├── nightly-regression.yml
 │   ├── pr-smoke-tests.yml
 │   ├── prod-sanity-checks.yml
-│   └── security-scan.yml
+│   ├── security-scan.yml
+│   └── contract-tests.yml
 │
 ├── infrastructure/
 │   ├── Dockerfile.playwright
@@ -152,6 +160,28 @@ cashi-automation-framework/
     │   │   └── ios-simulator.json
     │   ├── testdata/
     │   │   └── biometrics-mock.json
+    │   └── junit-platform.properties
+    └── pom.xml
+
+└── cashi-contract-testing/
+    ├── src/main/java/com/cashi/contract/
+    │   └── model/
+    │       ├── LedgerEntryRequest.java
+    │       ├── LedgerEntryResponse.java
+    │       ├── LedgerBalanceResponse.java
+    │       └── TransferResponse.java
+    ├── src/test/java/com/cashi/contract/
+    │   ├── BaseContractTest.java
+    │   ├── consumer/
+    │   │   ├── TransferServiceLedgerConsumerTest.java
+    │   │   └── NotificationServiceTransferConsumerTest.java
+    │   └── provider/
+    │       ├── LedgerProviderVerificationTest.java
+    │       └── TransferProviderVerificationTest.java
+    ├── src/test/resources/
+    │   ├── pacts/
+    │   │   ├── TransferService-LedgerService.json
+    │   │   └── NotificationService-TransferService.json
     │   └── junit-platform.properties
     └── pom.xml
 ```
@@ -262,7 +292,7 @@ The framework is designed as "Infrastructure as Code," with execution environmen
 
 **Pipeline Orchestration:**
 
-`.github/workflows/` contains four targeted pipelines:
+`.github/workflows/` contains five targeted pipelines:
 
 | Workflow | Trigger | Scope | Environment |
 |---|---|---|---|
@@ -270,6 +300,7 @@ The framework is designed as "Infrastructure as Code," with execution environmen
 | `nightly-regression.yml` | Scheduled (nightly) | `@Tag("regression")` — full suite | Dev / Staging |
 | `prod-sanity-checks.yml` | Manual dispatch | `@Tag("smoke")` — read-only | Production (gated) |
 | `security-scan.yml` | Scheduled (weekly) | OWASP ZAP baseline + active scan | Staging |
+| `contract-tests.yml` | PR + push to main + nightly + manual | Consumer pacts (PR); provider verification (main/nightly) | Dev / Staging |
 
 **Execution Commands:**
 
@@ -288,6 +319,13 @@ mvn verify -pl cashi-web -Dgroups=smoke -Denv=prod -Dallow.prod.readonly=true
 
 # Security suite
 mvn verify -pl cashi-web -Dgroups=security -Denv=staging
+
+# Contract tests — consumer only (mock server, no real services)
+mvn test -pl cashi-contract-testing -Denv=dev
+
+# Contract tests — provider verification against staging
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=LedgerProviderVerificationTest
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=TransferProviderVerificationTest
 
 # Dependency audit
 mvn dependency-check:check
@@ -461,6 +499,69 @@ mvn dependency-check:check
 
 ---
 
+### Requirement 8: Consumer-Driven Contract Testing
+
+Contract testing validates the API boundaries between Cashi microservices without requiring a fully integrated environment. It guarantees that a provider service never silently breaks its consumer's expectations.
+
+**Technology:** Pact JVM 4.6.5 (Pact Specification 3.0) via the `cashi-contract-testing` Maven module.
+
+**Contracts Implemented:**
+
+| Consumer | Provider | Interactions |
+|---|---|---|
+| **TransferService** | **LedgerService** | `POST /v1/ledger/entries` (post double-entry journal), `GET /v1/ledger/balance/{accountId}` (pre-transfer balance check), `GET /v1/ledger/entries/{transactionId}` (audit lookup) |
+| **NotificationService** | **TransferService** | `GET /v1/transfers/{transferId}` (fetch transfer for confirmation alert), `GET /v1/transfers?accountId=&status=COMPLETED` (batch digest notification) |
+
+**Two-Phase Execution Model:**
+
+- **Phase 1 — Consumer tests** (`*ConsumerTest`): Pact starts an in-process mock server. The consumer-side code sends real HTTP requests to this mock server. Pact validates the requests match the agreed interaction shape and generates a pact JSON file in `target/pacts/`. No real service is required — these run on every PR in CI using only `cashi-contract-testing` with `-Denv=dev`.
+
+- **Phase 2 — Provider verification** (`*VerificationTest`): Pact loads the committed pact files from `src/test/resources/pacts/` and replays each interaction against the real running service (resolved from `ConfigManager` using `ledger.service.host`, `ledger.service.port`, etc.). Provider state setup methods (`@State`) seed the necessary preconditions before each interaction. This phase runs on merge to `main` and nightly against staging.
+
+**Pact Files (committed fixtures):**
+
+- `src/test/resources/pacts/TransferService-LedgerService.json` — three interactions with Pact Specification 3.0 matching rules
+- `src/test/resources/pacts/NotificationService-TransferService.json` — two interactions
+
+**Pact Broker (optional):**
+
+The `cashi-contract-testing/pom.xml` configures the `pact:publish` Maven goal. Pact files can be published to a Pact Broker after consumer tests pass, enabling provider teams to pull and verify the latest contracts without committing them to the repository.
+
+```bash
+mvn -pl cashi-contract-testing pact:publish \
+  -Dpact.broker.url=https://your-broker.example.com \
+  -Dpact.broker.auth.token=${PACT_BROKER_TOKEN}
+```
+
+**Provider State Configuration:**
+
+Service endpoints are resolved from environment config keys added to all `*.properties` files:
+
+```properties
+# config/staging.properties (example)
+transfer.service.host=transfer-service.staging.cashi.internal
+transfer.service.port=8080
+ledger.service.host=ledger-service.staging.cashi.internal
+ledger.service.port=8085
+notification.service.host=notification-service.staging.cashi.internal
+notification.service.port=8090
+```
+
+**Execution:**
+
+```bash
+# Consumer tests (mock server — no real services needed)
+mvn test -pl cashi-contract-testing -Denv=dev
+
+# Provider verification — LedgerService must be running
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=LedgerProviderVerificationTest
+
+# Provider verification — TransferService must be running
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=TransferProviderVerificationTest
+```
+
+---
+
 ## 4. Architectural Invariants (Non-Negotiable Rules)
 
 | Rule | Enforcement Mechanism |
@@ -473,6 +574,10 @@ mvn dependency-check:check
 | Page Objects and Screen Objects contain **no assertions** | Pages act, tests assert |
 | `prod-sanity-checks.yml` requires **manual approval** | GitHub Environment protection rules |
 | `cashi-web` and `cashi-mobile` never depend on each other | Maven module dependency graph — siblings only |
+| `cashi-contract-testing` has **zero** UI framework dependencies | `pom.xml` review — no Playwright, no Appium artifacts |
+| Contract tests are **blocked against prod** | `BaseContractTest` throws `IllegalStateException` if `env=prod` |
+| Consumer pact files are **committed to source control** | `src/test/resources/pacts/` tracked in Git; provider verifications read from this path |
+| `cashi-web`, `cashi-mobile`, and `cashi-contract-testing` **never depend on each other** | Maven module dependency graph — all three are siblings of `cashi-core` |
 
 ---
 
@@ -485,6 +590,7 @@ All test classes must use JUnit 5 `@Tag` annotations for execution filtering **a
 | `@Tag("smoke")` | JUnit 5: selects tests for PR gate pipeline | Fast, critical-path tests |
 | `@Tag("regression")` | JUnit 5: selects tests for nightly full suite | Comprehensive coverage |
 | `@Tag("security")` | JUnit 5: selects tests for security suite | OWASP, auth, session tests |
+| `@Tag("contract")` | JUnit 5: selects tests for contract testing pipeline | Consumer pacts + provider verification |
 | `@Tag("web")` / `@Tag("mobile")` | JUnit 5: platform filter (optional) | Cross-cutting selection |
 | `@Epic("Payments")` | Allure: top-level report grouping | Business domain |
 | `@Feature("Send Money")` | Allure: feature-level report grouping | Specific capability |
@@ -517,6 +623,7 @@ class LoginTest extends BaseWebTest {
 | Build | Maven | Multi-module with Parent POM `<dependencyManagement>` |
 | Web UI | Playwright for Java | Pinned in Parent POM |
 | Mobile UI | Appium Java Client | 9.x (not legacy 8.x) |
+| Contract Testing | Pact JVM (Consumer + Provider) | 4.6.5, Pact Spec 3.0, pinned in Parent POM |
 | API Client | REST Assured | Data seeding only; API functional testing handled by Postman |
 | Assertions | AssertJ | Fluent, readable assertions across all modules |
 | Serialization | Jackson | JSON to POJO mapping |
@@ -525,6 +632,6 @@ class LoginTest extends BaseWebTest {
 | Reporting | Allure | JUnit 5 integration, global via Parent POM |
 | Logging | SLF4J + Logback | Thread-safe, centralized in `cashi-core` |
 | Security Scan | OWASP Dependency-Check + OWASP ZAP | Build-time CVE + weekly DAST |
-| CI/CD | GitHub Actions | 4 workflow files |
+| CI/CD | GitHub Actions | 5 workflow files |
 | Containers | Docker | Playwright execution + ZAP proxy |
 | Stubbing | WireMock | Versioned mappings in `infrastructure/stubs/` |
