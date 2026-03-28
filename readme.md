@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-The Cashi Test Automation Platform is an enterprise-grade, multi-module Maven ecosystem designed to validate web and mobile applications. Built on Java 17+, Playwright, and Appium, the framework is engineered for high-volume parallel execution, strict thread safety, and DevSecOps integration. It strictly decouples the shared test engine from UI-specific driver management, ensuring that no module carries dependencies it does not need.
+The Cashi Test Automation Platform is an enterprise-grade, multi-module Maven ecosystem designed to validate web and mobile applications across a microservices architecture. Built on Java 17+, Playwright, Appium, and Pact JVM, the framework is engineered for high-volume parallel execution, strict thread safety, and DevSecOps integration. It strictly decouples the shared test engine from UI-specific driver management and service-boundary contract validation, ensuring that no module carries dependencies it does not need.
 
 ---
 
@@ -23,6 +23,7 @@ The repository follows a multi-module monorepo structure to enforce the DRY (Don
 | `cashi-core` | UI-agnostic engine: API clients, data factories, configuration, logging, shared utilities | **None** |
 | `cashi-web` | Playwright-driven web UI testing: Page Objects, browser lifecycle, web tests | Playwright |
 | `cashi-mobile` | Appium-driven mobile testing: Screen Objects, device management, mobile tests | Appium Java Client 9.x |
+| `cashi-contract-testing` | Consumer-driven contract tests between microservices using Pact JVM; generates and verifies pact files | **None** |
 
 ### 2.1 Dependency Flow
 
@@ -39,9 +40,15 @@ cashi-core  <──compile──  cashi-web
     ├── AssertJ                                        │
     ├── SLF4J/Logback                                  ├── Appium Java Client 9.x
     └── JUnit 5                                        └── JUnit 5
+
+                         cashi-core  <──compile──  cashi-contract-testing
+                                                        │
+                                                        ├── Pact JVM Consumer (junit5)
+                                                        ├── Pact JVM Provider (junit5)
+                                                        └── JUnit 5
 ```
 
-**Architectural Invariant:** `cashi-web` and `cashi-mobile` are siblings — they never depend on each other. `cashi-core` has zero UI framework dependencies.
+**Architectural Invariant:** `cashi-web`, `cashi-mobile`, and `cashi-contract-testing` are siblings — they never depend on each other. `cashi-core` has zero UI framework dependencies. `cashi-contract-testing` has zero UI framework dependencies.
 
 ### 2.2 Directory Structure
 
@@ -52,7 +59,8 @@ cashi-automation-framework/
 │   ├── nightly-regression.yml
 │   ├── pr-smoke-tests.yml
 │   ├── prod-sanity-checks.yml
-│   └── security-scan.yml
+│   ├── security-scan.yml
+│   └── contract-tests.yml
 │
 ├── infrastructure/
 │   ├── Dockerfile.playwright
@@ -152,6 +160,28 @@ cashi-automation-framework/
     │   │   └── ios-simulator.json
     │   ├── testdata/
     │   │   └── biometrics-mock.json
+    │   └── junit-platform.properties
+    └── pom.xml
+
+└── cashi-contract-testing/
+    ├── src/main/java/com/cashi/contract/
+    │   └── model/
+    │       ├── LedgerEntryRequest.java
+    │       ├── LedgerEntryResponse.java
+    │       ├── LedgerBalanceResponse.java
+    │       └── TransferResponse.java
+    ├── src/test/java/com/cashi/contract/
+    │   ├── BaseContractTest.java
+    │   ├── consumer/
+    │   │   ├── TransferServiceLedgerConsumerTest.java
+    │   │   └── NotificationServiceTransferConsumerTest.java
+    │   └── provider/
+    │       ├── LedgerProviderVerificationTest.java
+    │       └── TransferProviderVerificationTest.java
+    ├── src/test/resources/
+    │   ├── pacts/
+    │   │   ├── TransferService-LedgerService.json
+    │   │   └── NotificationService-TransferService.json
     │   └── junit-platform.properties
     └── pom.xml
 ```
@@ -262,7 +292,7 @@ The framework is designed as "Infrastructure as Code," with execution environmen
 
 **Pipeline Orchestration:**
 
-`.github/workflows/` contains four targeted pipelines:
+`.github/workflows/` contains five targeted pipelines:
 
 | Workflow | Trigger | Scope | Environment |
 |---|---|---|---|
@@ -270,6 +300,7 @@ The framework is designed as "Infrastructure as Code," with execution environmen
 | `nightly-regression.yml` | Scheduled (nightly) | `@Tag("regression")` — full suite | Dev / Staging |
 | `prod-sanity-checks.yml` | Manual dispatch | `@Tag("smoke")` — read-only | Production (gated) |
 | `security-scan.yml` | Scheduled (weekly) | OWASP ZAP baseline + active scan | Staging |
+| `contract-tests.yml` | PR + push to main + nightly + manual | Consumer pacts (PR); provider verification (main/nightly) | Dev / Staging |
 
 **Execution Commands:**
 
@@ -288,6 +319,13 @@ mvn verify -pl cashi-web -Dgroups=smoke -Denv=prod -Dallow.prod.readonly=true
 
 # Security suite
 mvn verify -pl cashi-web -Dgroups=security -Denv=staging
+
+# Contract tests — consumer only (mock server, no real services)
+mvn test -pl cashi-contract-testing -Denv=dev
+
+# Contract tests — provider verification against staging
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=LedgerProviderVerificationTest
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=TransferProviderVerificationTest
 
 # Dependency audit
 mvn dependency-check:check
@@ -461,6 +499,69 @@ mvn dependency-check:check
 
 ---
 
+### Requirement 8: Consumer-Driven Contract Testing
+
+Contract testing validates the API boundaries between Cashi microservices without requiring a fully integrated environment. It guarantees that a provider service never silently breaks its consumer's expectations.
+
+**Technology:** Pact JVM 4.6.5 (Pact Specification 3.0) via the `cashi-contract-testing` Maven module.
+
+**Contracts Implemented:**
+
+| Consumer | Provider | Interactions |
+|---|---|---|
+| **TransferService** | **LedgerService** | `POST /v1/ledger/entries` (post double-entry journal), `GET /v1/ledger/balance/{accountId}` (pre-transfer balance check), `GET /v1/ledger/entries/{transactionId}` (audit lookup) |
+| **NotificationService** | **TransferService** | `GET /v1/transfers/{transferId}` (fetch transfer for confirmation alert), `GET /v1/transfers?accountId=&status=COMPLETED` (batch digest notification) |
+
+**Two-Phase Execution Model:**
+
+- **Phase 1 — Consumer tests** (`*ConsumerTest`): Pact starts an in-process mock server. The consumer-side code sends real HTTP requests to this mock server. Pact validates the requests match the agreed interaction shape and generates a pact JSON file in `target/pacts/`. No real service is required — these run on every PR in CI using only `cashi-contract-testing` with `-Denv=dev`.
+
+- **Phase 2 — Provider verification** (`*VerificationTest`): Pact loads the committed pact files from `src/test/resources/pacts/` and replays each interaction against the real running service (resolved from `ConfigManager` using `ledger.service.host`, `ledger.service.port`, etc.). Provider state setup methods (`@State`) seed the necessary preconditions before each interaction. This phase runs on merge to `main` and nightly against staging.
+
+**Pact Files (committed fixtures):**
+
+- `src/test/resources/pacts/TransferService-LedgerService.json` — three interactions with Pact Specification 3.0 matching rules
+- `src/test/resources/pacts/NotificationService-TransferService.json` — two interactions
+
+**Pact Broker (optional):**
+
+The `cashi-contract-testing/pom.xml` configures the `pact:publish` Maven goal. Pact files can be published to a Pact Broker after consumer tests pass, enabling provider teams to pull and verify the latest contracts without committing them to the repository.
+
+```bash
+mvn -pl cashi-contract-testing pact:publish \
+  -Dpact.broker.url=https://your-broker.example.com \
+  -Dpact.broker.auth.token=${PACT_BROKER_TOKEN}
+```
+
+**Provider State Configuration:**
+
+Service endpoints are resolved from environment config keys added to all `*.properties` files:
+
+```properties
+# config/staging.properties (example)
+transfer.service.host=transfer-service.staging.cashi.internal
+transfer.service.port=8080
+ledger.service.host=ledger-service.staging.cashi.internal
+ledger.service.port=8085
+notification.service.host=notification-service.staging.cashi.internal
+notification.service.port=8090
+```
+
+**Execution:**
+
+```bash
+# Consumer tests (mock server — no real services needed)
+mvn test -pl cashi-contract-testing -Denv=dev
+
+# Provider verification — LedgerService must be running
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=LedgerProviderVerificationTest
+
+# Provider verification — TransferService must be running
+mvn test -pl cashi-contract-testing -Denv=staging -Dtest=TransferProviderVerificationTest
+```
+
+---
+
 ## 4. Architectural Invariants (Non-Negotiable Rules)
 
 | Rule | Enforcement Mechanism |
@@ -473,6 +574,10 @@ mvn dependency-check:check
 | Page Objects and Screen Objects contain **no assertions** | Pages act, tests assert |
 | `prod-sanity-checks.yml` requires **manual approval** | GitHub Environment protection rules |
 | `cashi-web` and `cashi-mobile` never depend on each other | Maven module dependency graph — siblings only |
+| `cashi-contract-testing` has **zero** UI framework dependencies | `pom.xml` review — no Playwright, no Appium artifacts |
+| Contract tests are **blocked against prod** | `BaseContractTest` throws `IllegalStateException` if `env=prod` |
+| Consumer pact files are **committed to source control** | `src/test/resources/pacts/` tracked in Git; provider verifications read from this path |
+| `cashi-web`, `cashi-mobile`, and `cashi-contract-testing` **never depend on each other** | Maven module dependency graph — all three are siblings of `cashi-core` |
 
 ---
 
@@ -485,6 +590,7 @@ All test classes must use JUnit 5 `@Tag` annotations for execution filtering **a
 | `@Tag("smoke")` | JUnit 5: selects tests for PR gate pipeline | Fast, critical-path tests |
 | `@Tag("regression")` | JUnit 5: selects tests for nightly full suite | Comprehensive coverage |
 | `@Tag("security")` | JUnit 5: selects tests for security suite | OWASP, auth, session tests |
+| `@Tag("contract")` | JUnit 5: selects tests for contract testing pipeline | Consumer pacts + provider verification |
 | `@Tag("web")` / `@Tag("mobile")` | JUnit 5: platform filter (optional) | Cross-cutting selection |
 | `@Epic("Payments")` | Allure: top-level report grouping | Business domain |
 | `@Feature("Send Money")` | Allure: feature-level report grouping | Specific capability |
@@ -529,186 +635,3 @@ class LoginTest extends BaseWebTest {
 | CI/CD | GitHub Actions | 5 workflow files |
 | Containers | Docker | Playwright execution + ZAP proxy |
 | Stubbing | WireMock | Versioned mappings in `infrastructure/stubs/` |
-
----
-
-## 7. Design Patterns
-
-The framework applies well-established design patterns at every layer, mapped below to the module and class where each is embodied.
-
-### 7.1 Page Object Model (POM) — `cashi-web`
-
-Web UI interactions are encapsulated inside dedicated Page Object classes. Tests never touch Playwright selectors directly.
-
-| Page Object | Encapsulates |
-|---|---|
-| `LoginPage.java` | Username/password field interactions, submit action |
-| `DashboardPage.java` | Balance display, navigation, account summary |
-| `TransferPage.java` | Recipient selection, amount entry, transfer confirmation |
-
-**Rule enforced:** Page Objects contain **no assertions** — they expose actions only. Tests own all assertions.
-
-```java
-// Page Object — action only
-public class TransferPage {
-    @Step("Enter transfer amount")
-    public TransferPage enterAmount(BigDecimal amount) {
-        page.fill("[data-testid='amount-input']", amount.toPlainString());
-        return this;
-    }
-
-    @Step("Submit transfer")
-    public void submit() {
-        page.click("[data-testid='transfer-submit']");
-    }
-}
-
-// Test — assertion owned here
-@Test
-void shouldCompleteP2PTransfer() {
-    transferPage.enterAmount(new BigDecimal("100.00")).submit();
-    assertThat(dashboardPage.getLastTransactionStatus()).isEqualTo("COMPLETED");
-}
-```
-
----
-
-### 7.2 Screen Object Model — `cashi-mobile`
-
-The mobile equivalent of POM. Appium interactions are encapsulated in Screen Object classes; tests are kept free of driver-level locator logic.
-
-| Screen Object | Encapsulates |
-|---|---|
-| `LoginScreen.java` | Biometric prompt, PIN entry, login submission |
-| `HomeScreen.java` | Balance tile, quick-send shortcut, navigation bar |
-| `BiometricsScreen.java` | Fingerprint/FaceID prompt handling, fallback PIN |
-
----
-
-### 7.3 Factory Pattern — `cashi-core`
-
-Test data is created through factory classes that abstract away data seeding complexity. Consumers request a pre-configured object; the factory handles API calls and returns a ready-to-use POJO.
-
-```java
-// Usage in @BeforeEach
-UserAccount sender = UserFactory.aDefaultUser()
-        .withEmail("sender@cashi-test.com")
-        .withBalance(new BigDecimal("1000.00"))
-        .build();
-```
-
-| Factory | Responsibility |
-|---|---|
-| `UserFactory.java` | Creates user accounts via REST API seed calls |
-| `TransactionBuilder.java` | Constructs parameterized transfer payloads |
-
----
-
-### 7.4 Singleton Pattern — `cashi-core`
-
-`ConfigManager` is a static singleton initialized once via a `static {}` block. This guarantees that environment properties are loaded exactly once per JVM, regardless of how many parallel test threads are running.
-
-```java
-// Single load, safe for concurrent read access
-public final class ConfigManager {
-    private static final Properties properties = new Properties();
-    static {
-        // loaded once from config/<env>.properties
-    }
-    private ConfigManager() {}
-    public static String get(String key) { ... }
-}
-```
-
----
-
-### 7.5 Builder Pattern — `cashi-core` / `cashi-contract-testing`
-
-Complex request objects are constructed via fluent Builders, eliminating telescoping constructors and making test data declarations self-documenting.
-
-```java
-LedgerEntryRequest request = LedgerEntryRequest.builder()
-        .transactionId("txn-2026-abc-001")
-        .debitAccountId("acc-agt-001")
-        .creditAccountId("acc-agt-002")
-        .amount(new BigDecimal("250.00"))
-        .currency("USD")
-        .transferType("P2P")
-        .build();
-```
-
----
-
-### 7.6 ThreadLocal Pattern — `cashi-web` / `cashi-mobile`
-
-Playwright `BrowserContext` and Appium `AppiumDriver` are not thread-safe. Both are stored in `ThreadLocal<>` to guarantee that each parallel test class owns an isolated driver instance with no cross-thread contamination.
-
-```java
-// BaseWebTest
-private static final ThreadLocal<BrowserContext> browserContext = new ThreadLocal<>();
-
-// BaseMobileTest (via DeviceManager)
-private static final ThreadLocal<AppiumDriver> driver = new ThreadLocal<>();
-```
-
----
-
-### 7.7 Template Method Pattern — Base Test Classes
-
-Shared lifecycle hooks (config loading, Allure setup, prod guards, driver setup/teardown) are implemented once in abstract base classes. Concrete test classes inherit the full lifecycle and only provide test methods.
-
-```text
-BaseCoreTest          → env guard, Allure lifecycle, logging setup
-    ├── BaseWebTest   → @BeforeAll browser launch, @AfterAll browser close
-    ├── BaseMobileTest→ @BeforeAll Appium driver init, @AfterAll driver quit
-    └── BaseContractTest → prod guard for contract tests
-```
-
----
-
-### 7.8 Consumer-Driven Contract Pattern — `cashi-contract-testing`
-
-Consumers (e.g., TransferService, NotificationService) define the exact request/response shape they need from a provider. The provider is then independently verified against that definition. This decouples integration testing from shared environments.
-
-```text
-1. Consumer writes @Pact interaction  →  mock server validates request shape
-2. Pact generates TransferService-LedgerService.json
-3. LedgerService CI loads the pact file  →  replays interactions against real service
-4. Test passes only if provider response matches consumer's matching rules
-```
-
----
-
-### 7.9 Data-Driven Testing Pattern — All Modules
-
-Parameterized tests decouple test logic from test data. A single test method iterates over N data sets, each reported as an independent test case in Allure.
-
-| Pattern | Mechanism | Use Case |
-|---|---|---|
-| Object stream DDT | `@ParameterizedTest` + `@MethodSource` | Complex POJOs, transfer amounts, account states |
-| Inline tabular DDT | `@ParameterizedTest` + `@CsvSource` | Simple string/integer combinations |
-| Security DDT | `@MethodSource` + `SecurityPayloads.xssVectors()` | OWASP XSS/SQLi payload iteration |
-| Contract DDT | Pact interaction list | Multiple provider state scenarios per contract |
-
----
-
-### 7.10 Fluent Interface Pattern — Assertions & API DSL
-
-AssertJ's fluent API and REST Assured's `given().when().then()` DSL are applied consistently to produce assertions and HTTP calls that read as natural English.
-
-```java
-// AssertJ fluent assertion
-assertThat(transfer.getStatus())
-        .as("Transfer must reach terminal COMPLETED state")
-        .isEqualTo("COMPLETED");
-
-// REST Assured fluent DSL
-given()
-    .baseUri(mockServer.getUrl())
-    .contentType(ContentType.JSON)
-    .body(request)
-.when()
-    .post("/v1/ledger/entries")
-.then()
-    .statusCode(201);
-```
